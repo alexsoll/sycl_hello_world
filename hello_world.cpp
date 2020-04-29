@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <CL/sycl.hpp>
+#include <set>
 
 void print_sep(std::string c) {
     for (int i = 0; i < 100; i++) {
@@ -11,12 +12,14 @@ void print_sep(std::string c) {
 
 int main(int, char**) {
 
-    const int size = 32000;
+    const int size = 1024;
+
+    std::set<int> setOfGroup;
 
     std::array<cl::sycl::float4, size> a;
     std::array<cl::sycl::float4, size> b;
     std::array<cl::sycl::float4, size> c;
-    std::cout << "123" << std::endl;
+    std::array<int, size> groups;
 
     for (size_t i = 0; i < size; i++) {
         a[i] = float(rand() % 100);
@@ -26,14 +29,14 @@ int main(int, char**) {
 
     class MyDeviceSelector : public cl::sycl::device_selector {
         public:
-            int operator()(const cl::sycl::device& Device) const override {
-                using namespace cl::sycl::info;
-                const std::string DeviceName = Device.get_info<device::name>();
-                const std::string DeviceVendor = Device.get_info<device::vendor>();
-                std::cout << DeviceName << " " << DeviceVendor << std::endl;
-                return Device.is_gpu();
-            }
-    };
+             int operator()(const cl::sycl::device& Device) const override {
+                 using namespace cl::sycl::info;
+                 const std::string DeviceName = Device.get_info<device::name>();
+                 const std::string DeviceVendor = Device.get_info<device::vendor>();
+                 std::cout << DeviceName << " " << DeviceVendor << std::endl;
+                 return Device.is_gpu();
+             }
+     };
 
     print_sep("#");
     std::cout << "#" << "\t\t\t\tGet devices list..." << std::endl;
@@ -51,22 +54,32 @@ int main(int, char**) {
             cl::sycl::buffer<cl::sycl::float4, 1> a_sycl(a.data(), cl::sycl::range<1>(size));
             cl::sycl::buffer<cl::sycl::float4, 1> b_sycl(b.data(), cl::sycl::range<1>(size));
             cl::sycl::buffer<cl::sycl::float4, 1> c_sycl(c.data(), cl::sycl::range<1>(size));
+            cl::sycl::buffer<int, 1> group_sycl(groups.data(), cl::sycl::range<1>(size));
             print_sep("#");
             std::cout << "#" << "\t\t\t\tRunning the application..." << std::endl;
             print_sep("#");
             Queue.submit([&] (cl::sycl::handler& cgh) {
-                cl::sycl::stream kernelout(size, 256, cgh);
+                cl::sycl::stream kernelout(size * 8, 512, cgh);
                 auto a_acc = a_sycl.get_access<cl::sycl::access::mode::read>(cgh);
                 auto b_acc = b_sycl.get_access<cl::sycl::access::mode::read>(cgh);
                 auto c_acc = c_sycl.get_access<cl::sycl::access::mode::write>(cgh);
+                auto groups_acc = group_sycl.get_access<cl::sycl::access::mode::write>(cgh);
                 cgh.parallel_for<class add_vectors>(sycl::range<1>(size), [=](cl::sycl::nd_item<1> item) {
                     int wiID = item.get_global_id()[0];
-                    int grID = item.get_group()[0];
+                    int grID = item.get_group().get_id();
                     kernelout << "Global id - " << wiID << " ; " << "Group id - " << grID << cl::sycl::endl;
                     c_acc[wiID] = a_acc[wiID] + b_acc[wiID];
+                    groups_acc[wiID] = grID;
                 });
             });
             Queue.wait_and_throw();
+
+            auto groups_acc = group_sycl.get_access<cl::sycl::access::mode::read>();
+            for(int i = 0; i < size; i++) {
+                setOfGroup.insert(groups_acc[i]);
+            }
+            std::cout << "Number of work-group discovered: " << setOfGroup.size() << std::endl;
+
         }
     } catch (cl::sycl::exception const& e) {
         std::cout << "Caught asynchronous SYCL exception:\n"
@@ -79,6 +92,6 @@ int main(int, char**) {
             return 1;
         }
     }
-    std::cout << "No errors" << std::endl;
+    std::cout << "\nNo errors" << std::endl;
     return 0;
 }
